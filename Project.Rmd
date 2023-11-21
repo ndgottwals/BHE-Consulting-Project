@@ -1,0 +1,1016 @@
+---
+title: "Project 1"
+author: "Chris Cavan, Marshall Ndhlovu, Noah Maddio, Nathan Gottwals"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This code uses only batch 2 code. All r code and rmarkdown will be in the root directory with and all sensory data are to be in the directory Data/Wind Turbine Data Batch 2/ and extracted into their respective sub directories as stated:
+  
+  **Work order**
+  
+  + Data/Wind Turbine Data Batch 2/Work Order
+
+**Active Power**
+  
+  + Data/Wind Turbine Data Batch 2/Active Power
+
+**Gearbox HS Bearing Temperature**
+  
+  + Data/Wind Turbine Data Batch 2/Gearbox HS Bearing
+
+**Gearbox IMS Bearing 1**
+  
+  + Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 1
+
+**Gearbox IMS Bearing 2**
+  
+  + Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 2
+
+**Gearbox Oil**
+  
+  + Gearbox Oil
+
+**Generator RPM**
+  
+  + Data/Wind Turbine Data Batch 2/Gearbox RPM
+
+**Hydraulic Pressure**
+  
+  + Data/Wind Turbine Data Batch 2/Hydraulic Pressure
+
+**Windspeed**
+  
+  + Data/Wind Turbine Data Batch 2/Windspeed
+
+<br>
+
+This project can be ran top to bottom. <br>
+# Libraries needed to run this project:
+
+```{r Libraries, warning=FALSE,message=FALSE,error=FALSE, results='hide'}
+rm(list = ls())
+# libraries 
+library(tidyverse) # version 2.0.0
+library(lubridate) # version 1.9.2
+library(dplyr) # version 1.10
+library(ggcorrplot) # version 0.1.4
+library(gridExtra) # version 2.3
+library(tidyr) # version 1.3.0
+library(ggplot2) # version 3.4.1
+library(RColorBrewer) # version 1.1-3
+library(reticulate)  # version 1.28
+library(fuzzywuzzyR) # 1.0.5
+library(plotly)  # version 4.10.1
+library(GGally)  # version 2.1.2
+library(imputeTS)  # version 3.3
+library(randomForest)  # version 4.6-1.1
+library(TSstudio)  # version 0.1.6
+library(pROC)  # version 1.18.0
+library(rlist) # version 0.4.6.2
+
+# Current version of RStudio : 2023.03.0 Build 386
+# In reticulate's python environment install (from the r terminal):
+# Note: The version of Python is 3.8.16
+#       Python can also be written natively in rmarkdown code chunks
+# numpy
+# polyfuzz
+# seaborn
+# pandas
+# matplotlib
+
+
+# python modules 
+DIFFLIB <- reticulate::import("difflib")
+POLYFUZZ <- reticulate::import("polyfuzz")
+
+# for data location. Needed depending on read in and write out at certain code chunks
+path_out = 'Data/'
+```
+
+
+## Data Processing
+<br>
+The data for the supplied sensor metrics are read in and the dates and time are converted to a usable date format. The data of the metrics are
+then aggregated by the average, min, max, standard deviation of the 60 minutes intervals. The data frames are then joined by the Turbine and with the date and time.
+```{r data_processing, eval=FALSE}
+#### ***Rmarkdown: Will not run when kniting unless you remove eval=FALSE ^
+
+
+#####workorder------------
+# gets a list of all of the csv files in the directory
+wo_files = list.files("Data/Wind Turbine Data Batch 2/Work Order", pattern="*.csv")
+# declaring a list and then adding files names of csvs to that list that have a file size larger than 1
+wo_list = list()
+for (i in 1:length(wo_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Work Order/", wo_files[i])) >1){
+    wo_list = c(wo_list, wo_files[i])
+  }
+}
+# reading in the first non empty csv from the list to a dataframe
+wo = read.csv(paste0("Data/Wind Turbine Data Batch 2/Work Order/", wo_list[1]), header = TRUE)
+# adding the rest of the csvs from the list
+# There is only one. There rest of the sensory data has multiple so there is a loop for that
+
+# work order exploration and data cleaning
+# cause_code all null
+#table(wo$cause_code)
+# start date is character
+#convert start and finish columns to date objects
+wo$wo_start_date = ymd_hms(wo$wo_start_date)
+# end date is also character
+#convert start and finish columns to date objects
+wo$wo_finish_date = ymd_hms(wo$wo_finish_date)
+#table(wo$cause_code)
+
+# This first converts the string "null" into a NA value. Then by grouping of OrderNo, fills in NA's with existing values of component_type, within a OrderNo if they exist. Then distinct() is ran to keep only unique rows. This allows us to keep unique work order numbers with component types when it is available. 
+workorder = wo %>% 
+  mutate(component_type = case_when(component_type == "null" ~ NA_character_,
+                                    TRUE ~ component_type)) %>% 
+  group_by(OrderNo) %>% 
+  fill(component_type, .direction = 'up') %>% 
+  fill(component_type, .direction = 'down') %>% distinct(OrderNo, .keep_all = TRUE)
+# compared to this which just keeps distinct OrderNo regardless of other variables, causing us to lose most of the component_type 
+# test = distinct(wo, OrderNo, .keep_all = TRUE)
+
+str(workorder)
+
+#### fault code---------------- 
+fault_files = list.files("Data/Wind Turbine Data Batch 2/Fault Status Codes", pattern="*.csv")
+fault_list = list()
+for (i in 1:length(fault_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Fault Status Codes/", fault_files[i])) >1){
+    fault_list = c(fault_list, fault_files[i])
+  }
+}
+fault = read.csv(paste0("Data/Wind Turbine Data Batch 2/Fault Status Codes/", fault_list[1]), header = FALSE)
+for (i in 2:length(fault_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Fault Status Codes/", fault_list[i]), header = FALSE)
+  fault = rbind(fault, new)
+}
+#renaming column headers
+names(fault) <- c("location_id", "DateTime", "Date", "FaultCode", "StatusCode", "Description", "Type")
+
+fault$DateTime <- ymd_hms(fault$DateTime)
+fault$Date <- ymd(fault$Date)
+
+#------------------------------Remove duplicates of fault code pinging for consecutive intervals---------------####
+# order fault data by turbine, date, and fault code
+# this code was made by ben and adapted to our dataset.
+fault <- fault[order(fault$location_id, fault$Date, fault$FaultCode),]
+# create new time difference variable to help remove duplicates
+fault$Time_Diff = NA
+
+
+# The first occurrence of a fault will have a 0 for time difference
+for(i in 2:length(fault$Date)){
+  # take time difference of two lines if they are the same fault code and same turbine id
+  if (fault$location_id[i] == fault$location_id[i-1] && fault$FaultCode[i] == fault$FaultCode[i-1]){
+    fault$Time_Diff[i] = as.numeric(difftime(fault$Date[i], fault$Date[i-1], 'days'))
+  }
+  # new faults or turbines (different from previous row) will start again at 0
+  else fault$Time_Diff[i] = 0 # 0 does not matter because it will not be used for removal
+}
+
+# set first line time difference to 0
+fault$Time_Diff[1] = 0
+
+# remove duplicates on the same day (only keep first occurrence of certain fault on a day)
+fault <- fault[!duplicated(fault[c("location_id", "Date", "FaultCode")]),]
+
+# remove duplicates of the same fault rolling into the next day and every consecutive day
+# example: on the first line where the same fault rolls over into the next day, the time difference from the previous
+#   line will be 1. Every other occurrence on the same day was already removed, but the next day where it rolled over
+#   will also have a 1. Thus, remove all 1's so the only thing that stands was the first occurrence in the entire series
+#   of intervals.
+fault <- fault %>% filter(Time_Diff != 1)
+
+
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+fault$round_date <- lubridate::round_date(fault$DateTime, "60 minutes")
+## keeping only one observation of each fault code of each turbine's 60 minutes interval
+fault <- fault %>% distinct(location_id, round_date,FaultCode, .keep_all = TRUE)
+# removing unused columns
+fault = subset(fault, select=-c(Time_Diff,DateTime,Date,StatusCode))
+
+
+#### Gearbox HS Bearing Temperature---------------- 
+bearing_files = list.files("Data/Wind Turbine Data Batch 2/Gearbox HS Bearing", pattern="*.csv")
+bearing_list = list()
+for (i in 1:length(bearing_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Gearbox HS Bearing/", bearing_files[i])) >1){
+    bearing_list = c(bearing_list, bearing_files[i])
+  }
+}
+bearing = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox HS Bearing/", bearing_list[1]), header = FALSE)
+for (i in 2:length(bearing_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox HS Bearing/", bearing_list[i]), header = FALSE)
+  bearing = rbind(bearing, new)
+}
+#convert Datetime from char to date
+bearing$V2 <- ymd_hms(bearing$V2)
+#renaming column headers
+names(bearing) <- c("location_id", "DateTime", "Date", "Temperature", "Bearing HS")
+# sorting data by turbine, then the DateTime.
+bearing <- bearing %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+bearing$round_date <- lubridate::round_date(bearing$DateTime, "60 minutes")
+#adding mean, max, min and sd of the 60 minutes intervals and dropping columns
+bearing <-bearing %>% group_by(location_id, round_date) %>% summarise(mean_bearing = mean(Temperature), max_bearing = max(Temperature), min_bearing = min(Temperature), sd_bearing = sd(Temperature), .groups = 'drop') %>% as.data.frame
+
+
+
+#### Gearbox IMS Bearing  1 Temperature---------------- 
+ims_files = list.files("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 1", pattern="*.csv")
+ims_list = list()
+for (i in 1:length(ims_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 1/", ims_files[i])) >1){
+    ims_list = c(ims_list, ims_files[i])
+  }
+}
+ims = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 1/", ims_list[1]), header = FALSE)
+for (i in 2:length(ims_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 1/", ims_list[i]), header = FALSE)
+  ims = rbind(ims, new)
+}
+#convert Datetime from char to date
+ims$V2 <- ymd_hms(ims$V2)
+#renaming column headers
+names(ims) <- c("location_id", "DateTime", "Date", "Temperature", "ims")
+# sorting data by turbine, then the DateTime.
+ims <- ims %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+ims$round_date <- lubridate::round_date(ims$DateTime, "60 minutes")
+#adding mean, max, min and sd ims bearing temp of the 60 minutes intervals and dropping columns
+ims <-ims %>% group_by(location_id, round_date) %>% summarise(mean_ims = mean(Temperature), max_ims = max(Temperature), min_ims = min(Temperature), sd_ims = sd(Temperature), .groups = 'drop') %>% as.data.frame
+
+
+#### Gearbox IMS Bearing  2 Temperature---------------- 
+ims_files2 = list.files("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 2", pattern="*.csv")
+ims_list2 = list()
+for (i in 1:length(ims_files2)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 2/", ims_files2[i])) >1){
+    ims_list2 = c(ims_list2, ims_files2[i])
+  }
+}
+ims2 = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 2/", ims_list2[1]), header = FALSE)
+for (i in 2:length(ims_list2)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox IMS Bearing 2/", ims_list2[i]), header = FALSE)
+  ims2 = rbind(ims2, new)
+}
+#convert Datetime from char to date
+ims2$V2 <- ymd_hms(ims2$V2)
+#renaming column headers
+names(ims2) <- c("location_id", "DateTime", "Date", "Temperature", "ims_2")
+# sorting data by turbine, then the DateTime.
+ims2 <- ims2 %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+ims2$round_date <- lubridate::round_date(ims2$DateTime, "60 minutes")
+#adding mean, max, min and sd ims2 bearing temp of the 60 minutes intervals and dropping columns
+ims2 <-ims2 %>% group_by(location_id, round_date) %>% summarise(mean_ims2 = mean(Temperature), max_ims2 = max(Temperature), min_ims2 = min(Temperature), sd_ims2 = sd(Temperature), .groups = 'drop') %>% as.data.frame
+
+
+#### Gearbox Oil---------------- 
+oil_files = list.files("Data/Wind Turbine Data Batch 2/Gearbox Oil", pattern="*.csv")
+oil_list = list()
+for (i in 1:length(oil_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Gearbox Oil/", oil_files[i])) >1){
+    oil_list = c(oil_list, oil_files[i])
+  }
+}
+oil = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox Oil/", oil_list[1]), header = FALSE)
+for (i in 2:length(oil_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Gearbox Oil/", oil_list[i]), header = FALSE)
+  oil = rbind(oil, new)
+}
+#convert Datetime from char to date
+oil$V2 <- ymd_hms(oil$V2)
+#renaming column headers
+names(oil) <- c("location_id", "DateTime", "Date", "Temperature", "oil")
+# sorting data by turbine, then the DateTime.
+oil <- oil %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+oil$round_date <- lubridate::round_date(oil$DateTime, "60 minutes")
+#adding mean, max, min and sd oil temp of the 60 minutes intervals and dropping columns
+oil <-oil %>% group_by(location_id, round_date) %>% summarise(mean_oil = mean(Temperature), max_oil = max(Temperature), min_oil = min(Temperature), sd_oil = sd(Temperature), .groups = 'drop') %>% as.data.frame
+
+
+#### Generator RPM---------------- 
+rpm_files = list.files("Data/Wind Turbine Data Batch 2/Generator RPM", pattern="*.csv")
+rpm_list = list()
+for (i in 1:length(rpm_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Generator RPM/", rpm_files[i])) >1){
+    rpm_list = c(rpm_list, rpm_files[i])
+  }
+}
+rpm = read.csv(paste0("Data/Wind Turbine Data Batch 2/Generator RPM/", rpm_list[1]), header = FALSE)
+for (i in 2:length(rpm_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Generator RPM/", rpm_list[i]), header = FALSE)
+  rpm = rbind(rpm, new)
+}
+#convert Datetime from char to date
+rpm$V2 <- ymd_hms(rpm$V2)
+#renaming column headers
+names(rpm) <- c("location_id", "DateTime", "Date", "RPM", "Generator rpm")
+# sorting data by turbine, then the DateTime.
+rpm <- rpm %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+rpm$round_date <- lubridate::round_date(rpm$DateTime, "60 minutes")
+# adding mean, max, min and sd rpm of the 60 minutes intervals and dropping columns
+# Removing keeping only one observation of the mean for each turbine's 60 minutes interval
+rpm <-rpm %>% group_by(location_id, round_date) %>% summarise(mean_rpm = mean(RPM), max_rpm = max(RPM), min_rpm = min(RPM), sd_rpm = sd(RPM), .groups = 'drop') %>% as.data.frame
+
+
+
+#### Hydraulic Pressure---------------- 
+hydraulic_files = list.files("Data/Wind Turbine Data Batch 2/Hydraulic Pressure", pattern="*.csv")
+hydraulic_list = list()
+for (i in 1:length(hydraulic_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Hydraulic Pressure/", hydraulic_files[i])) >1){
+    hydraulic_list = c(hydraulic_list, hydraulic_files[i])
+  }
+}
+hydraulic = read.csv(paste0("Data/Wind Turbine Data Batch 2/Hydraulic Pressure/", hydraulic_list[1]), header = FALSE)
+for (i in 2:length(hydraulic_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Hydraulic Pressure/", hydraulic_list[i]), header = FALSE)
+  hydraulic = rbind(hydraulic, new)
+}
+#convert Datetime from char to date
+hydraulic$V2 <- ymd_hms(hydraulic$V2)
+#renaming column headers
+names(hydraulic) <- c("location_id", "DateTime", "Date", "Pressure", "Hydraulic Pressure")
+# sorting data by turbine, then the DateTime.
+hydraulic <- hydraulic %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+hydraulic$round_date <- lubridate::round_date(hydraulic$DateTime, "60 minutes")
+#adding mean, max, min and sd of hydraulic pressure of the 60 minutes intervals and dropping columns
+hydraulic <-hydraulic %>% group_by(location_id, round_date) %>% summarise(mean_hydraulic = mean(Pressure), max_hydraulic = max(Pressure), min_hydraulic = min(Pressure), sd_hydraulic = sd(Pressure), .groups = 'drop') %>% as.data.frame
+
+
+#### active power-------------- 
+active_files = list.files("Data/Wind Turbine Data Batch 2/Active Power", pattern="*.csv")
+active_list = list()
+for (i in 1:length(active_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Active Power/", active_files[i])) >1){
+    active_list = c(active_list, active_files[i])
+  }
+}
+active = read.csv(paste0("Data/Wind Turbine Data Batch 2/Active Power/", active_list[1]), header = FALSE)
+for (i in 2:length(active_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Active Power/", active_list[i]), header = FALSE)
+  active = rbind(active, new)
+}
+#convert Datetime from char to date
+active$V2 <- ymd_hms(active$V2)
+#renaming column headers
+names(active) <- c("location_id", "DateTime", "Date", "power", "Active power")
+# sorting data by turbine, then the DateTime.
+active <- active %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+active$round_date <- lubridate::round_date(active$DateTime, "60 minutes")
+# adding mean, max, min and sd active power of the 60 minutes intervals and dropping columns
+active <-active %>% group_by(location_id, round_date) %>% summarise(mean_active = mean(power), max_active = max(power), min_active = min(power), sd_active = sd(power), .groups = 'drop')
+
+
+
+#### Ambient Temperature-------------- 
+ambient_files = list.files("Data/Wind Turbine Data Batch 2/Ambient Temperature", pattern="*.csv")
+ambient_list = list()
+for (i in 1:length(ambient_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Ambient Temperature/", ambient_files[i])) >1){
+    ambient_list = c(ambient_list, ambient_files[i])
+  }
+}
+ambient = read.csv(paste0("Data/Wind Turbine Data Batch 2/Ambient Temperature/", ambient_list[1]), header = FALSE)
+for (i in 2:length(ambient_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Ambient Temperature/", ambient_list[i]), header = FALSE)
+  ambient = rbind(ambient, new)
+}
+#convert Datetime from char to date
+ambient$V2 <- ymd_hms(ambient$V2)
+#renaming column headers
+names(ambient) <- c("location_id", "DateTime", "Date", "ambient_temp", "Ambient Temperature")
+# sorting data by turbine, then the DateTime.
+ambient <- ambient %>% 
+  arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+ambient$round_date <- lubridate::round_date(ambient$DateTime, "60 minutes")
+#adding mean, max, min and sd power of the 60 minutes intervals and dropping columns
+ambient <-ambient %>% group_by(location_id, round_date) %>% summarise(mean_ambient = mean(ambient_temp), max_ambient = max(ambient_temp), min_ambient = min(ambient_temp), sd_ambient = sd(ambient_temp), .groups = 'drop') %>% as.data.frame
+
+#### Wind Speed-------------- 
+wind_files = list.files("Data/Wind Turbine Data Batch 2/Windspeed", pattern="*.csv")
+wind_list = list()
+for (i in 1:length(wind_files)) {
+  if (file.size(paste0("Data/Wind Turbine Data Batch 2/Windspeed/", wind_files[i])) >1){
+    wind_list = c(wind_list, wind_files[i])
+  }
+}
+wind = read.csv(paste0("Data/Wind Turbine Data Batch 2/Windspeed/", wind_list[1]), header = FALSE)
+for (i in 2:length(wind_list)){
+  new = read.csv(paste0("Data/Wind Turbine Data Batch 2/Windspeed/", wind_list[i]), header = FALSE)
+  wind = rbind(wind, new)
+}
+#convert Datetime from char to date
+wind$V2 <- ymd_hms(wind$V2)
+#renaming column headers
+names(wind) <- c("location_id", "DateTime", "Date", "windspeed", "Wind Speed")
+# sorting data by turbine, then the DateTime.
+wind <- wind %>% arrange(location_id, DateTime) %>% distinct()
+#Adding a variable round_date to round times to nearest 60 minutes intervals
+wind$round_date <- lubridate::round_date(wind$DateTime, "60 minutes")
+#adding mean, max, min and sd power of the 60 minutes intervals and dropping columns
+wind <-wind %>% group_by(location_id, round_date) %>% summarise(mean_windspeed = mean(windspeed), max_windspeed = max(windspeed), min_windspeed = min(windspeed), sd_windspeed = sd(windspeed), .groups = 'drop') %>% as.data.frame()
+
+```
+
+```{r joining, eval=FALSE}
+#### ***Rmarkdown: Will not run when knitting unless you remove eval=FALSE ^
+
+####Joining datasets------
+# wind speed not joined as there isn't enough data
+fully_joined <- full_join(hydraulic, bearing, by=c('location_id', 'round_date')) %>%
+  full_join(., rpm, c('location_id', 'round_date')) %>%
+  full_join(., oil, c('location_id', 'round_date')) %>%
+  full_join(., ims, c('location_id', 'round_date')) %>%
+  full_join(., ims2, c('location_id', 'round_date')) %>%
+  full_join(., active, c('location_id', 'round_date'))%>%
+  full_join(., ambient, by=c('location_id', 'round_date'))
+
+# Because fault codes are condensed into the first occurrences, fault code events, it is left joined.
+fully_joined <- left_join(fully_joined, fault, by=c('location_id', 'round_date'))
+
+
+#Note Date should be the just the ymd, the same as round_date's ymd_hms, but since during aggregation something like 23:57 would be rounded to 00:00am of the next day,
+# but would have the previous date,ymd, in Date and the next day's,ymd, date in round_date. We will just fix that.
+fully_joined$Date = fully_joined$round_date
+fully_joined$Date = format(fully_joined$Date, "%Y-%m-%d")
+
+# Output joined dataset
+# multiple output and read in are made to fit different criteria through the project.
+path_out = 'Data/'
+write.csv(fully_joined,paste(path_out,'final_data-v10-joined.csv',sep = ''),row.names=FALSE)
+
+```
+
+# Target Variable
+Creation of variables for prediction and graphing<br>
+FaultCodeType<br>
+BinaryFault<br>
+
+```{r fault code Descriptions, eval=FALSE}
+#### ***Rmarkdown: Will not run when knitting unless you remove eval=FALSE ^
+
+unique(fully_joined$Description)
+# If the Turbine stops and needs work, it's critical
+# Warning is for what maybe a warning or something.
+# else it is unknown, no fault codes, manual stopped or stopped for some other reason
+
+# Creating categorical variable FaultCodeType.
+#grep() could/should had been used here.
+fully_joined = fully_joined %>%mutate(FaultCodeType =
+                                        case_when(
+                                          Description == "Gear Oil Temperature High"~"Critical",
+                                          Description == "Gear Oil Pressure Too High/Low"~"Critical",
+                                          Description == "Converter Tripped, Auto Start"~"Critical",
+                                          Description == "Mainbreaker Cut Out"~"Critical",
+                                          Description == "Gear Oil Pump/Blower Superheated"~"Critical",
+                                          Description == "Ups Bypass Error"~"Critical",
+                                          Description == "Ups-Failure"~"Critical"  ,
+                                          Description == "Slip Ring Error"~"Critical",
+                                          Description == "Osc. In Gen Speed, Cons. Lim"~"Critical",
+                                          Description == "Ims-Gen Gearbearing Temp Too High"~"Critical",
+                                          Description == "Ups-Failure"~"Critical",
+                                          Description == "Hs-Gen Gearbearing Superheated "~"Critical",
+                                          Description == "Grid Filter Current Overload"~"Critical",
+                                          Description == "Gearoil Level Too Low"~"Critical",
+                                          Description == "Rpm Sensor Error"~"Critical",
+                                          Description == "Srsg Activated"~"Critical",
+                                          Description == "Lms-Rot Gearbearing Temp Too High"~"Critical",
+                                          Description == "Gear Oil Temperature Warning"~"Warning",
+                                          Description == "Converter Trip, External"~"Warning",
+                                          Description == "Converter Tripped, General"~"Warning",
+                                          Description == "Main Bearing Temp Too High"~"Warning",
+                                          Description == "Generator High Speed Waiting"~"Warning",
+                                          Description == "Inv.(Tow) Cool Water Pres. Warning"~"Warning",
+                                          Description == "Inv.(Tow) Cool Water Pres. Low"~"Warning",
+                                          Description == "Tower Conv. Cooling Water Low"~"Warning",
+                                          Description == "Hydraulic Filter Warning"~"Warning",
+                                          Description == "Gear Oil Temp Sensor Warning"~"Warning",
+                                          Description == "Main Bearing Temp Warning"~"Warning",
+                                          Description == "Lmu Alarm Overspeed"~"Warning",
+                                          Description == "Brake Pressure Too Low"~"Warning",
+                                          Description == "Inverter Temperature High"~"Warning",
+                                          Description == "Grdinv: 38 D1 Volt High"~"Warning",
+                                          Description == "Grease Level Low, Gen Bearings"~"Warning",
+                                          Description == "Grdinv: 38 D1 Volt High"~"Warning",
+                                          Description == "Yaw Limit Sensor Activated"~"Warning",
+                                          Description == "No Lubrication, Gen Bearings"~"Warning",
+                                          Description == "Brake (Gen) Temperature Error"~"Warning",
+                                          Description == "Dc Voltage Low"~"Warning",
+                                          Description == "Grease Level Low, Hub"~"Warning",
+                                          Description == "Geninv: 38 D1 Volt High"~"Warning",
+                                          Description == "Gearoil Level Too Low"~"Warning",
+                                          Description == "Geninv: 56 D3 Volt High"~"Warning",
+                                          Description == "Inv. Cooling Water Temp Warning"~"Warning",
+                                          Description == "Delta Module Temperature High"~"Warning",
+                                          Description == "Gear Oil Temp Sensor Warning"~"Warning",
+                                          Description == "Gear Bearing Hs-Gen Sensor Warning"~"Warning",
+                                          Description == "Gear Bearing Hs-Rot Sensor Warning"~"Warning",
+                                          Description == "Gear Bearing Ims-Gen Sensor Warning"~"Warning",
+                                          Description == "Gear Bearing Ims-Rot Sensor Warning"~"Warning",
+                                          Description == "Hs-Rot Gearbearing Temp Warning"~"Warning",
+                                          Description == "Fuse Blown, Grid Filter"~"Warning",
+                                          Description == "Hs-Gen Gearbearing Temp Warning"~"Warning",
+                                          Description == "High Upper Voltage Exceeded"~"Warning",
+                                          Description == "Low Lower Voltage Exceeded"~"Warning",
+                                          Description == "UPS Battery Low, Warning"~"Warning",
+                                          Description == "Ups Battery Low"~"Warning",
+                                          Description == "Dc Fuse Blown"~"Warning",
+                                          Description == "Gear Oil Temperature Low"~"Warning",
+                                          Description == "Hydraulic Oil Too Cold"~"Warning",
+                                          Description == "Blown Yaw Brake Fuse"~"Warning",
+                                          Description == "Too Many Slip Ring Errors"~"Warning",
+                                          Description == "No Lubrication, Yaw System"~"Warning",
+                                          Description == "Lmu Sensor Error"~"Warning",
+                                          Description == "Srsg Activated"~"Warning",
+                                          .default ="Other"
+                                        ))
+
+# creating a binary y variable, only for the fault codes that were determined by Daniel as being bad
+fully_joined = fully_joined %>% mutate(BinaryFault = case_when(FaultCodeType == "Critical" ~ 1,
+                                                               .default = 0))
+
+# Output joined dataset with FaultCodeType and BinaryFault.
+# multiple output and read in are made to fit different criteria through the project.
+path_out = 'Data/'
+write.csv(fully_joined,paste(path_out,'final_data-v10-joined.csv',sep = ''),row.names=FALSE)
+
+```
+
+## Lag varaibles
+Lagged variables, by 6 hours, are created for predictive modeling by using the r package tidyr, version 1.3.0, with dplyr tools. 
+
+```{r, lag}
+fully_joined <- read.csv("Data/final_data-v10-joined.csv", stringsAsFactors = TRUE)
+# after reading in, must convert time date again.
+fully_joined$round_date <- ymd_hms(fully_joined$round_date)
+fully_joined$Date <- ymd(fully_joined$Date)
+
+# Creating lag variables by 6 hours, using the dplyr lag function.
+lagged = fully_joined %>% group_by(location_id) %>% mutate(lag_mean_bearing = lag(mean_bearing,n=6),
+                                                           lag_max_bearing = lag(max_bearing,n=6),
+                                                           lag_min_bearing = lag(min_bearing,n=6),
+                                                           lag_sd_bearing = lag(sd_bearing,n=6),
+                                                           lag_mean_hydraulic = lag(mean_hydraulic,n=6),
+                                                           lag_max_hydraulic = lag(max_hydraulic,n=6),
+                                                           lag_min_hydraulic = lag(min_hydraulic,n=6),
+                                                           lag_sd_hydraulic = lag(sd_hydraulic,n=6),
+                                                           lag_mean_rpm = lag(mean_rpm,n=6),
+                                                           lag_max_rpm = lag(max_rpm,n=6),
+                                                           lag_min_rpm = lag(min_rpm,n=6),
+                                                           lag_sd_rpm = lag(sd_rpm,n=6),
+                                                           lag_mean_oil = lag(mean_oil,n=6),
+                                                           lag_max_oil = lag(max_oil,n=6),
+                                                           lag_min_oil = lag(min_oil,n=6),
+                                                           lag_sd_oil = lag(sd_oil,n=6),
+                                                           lag_mean_ims = lag(mean_ims,n=6),
+                                                           lag_max_ims = lag(max_ims,n=6),
+                                                           lag_min_ims = lag(min_ims,n=6),
+                                                           lag_sd_ims = lag(sd_ims,n=6),
+                                                           lag_mean_ims2 = lag(mean_ims2,n=6),
+                                                           lag_max_ims2 = lag(max_ims2,n=6),
+                                                           lag_min_ims2 = lag(min_ims2,n=6),
+                                                           lag_sd_ims2 = lag(sd_ims2,n=6),
+                                                           lag_mean_active = lag(mean_ims,n=6),
+                                                           lag_max_active = lag(max_active,n=6),
+                                                           lag_min_active = lag(min_active,n=6),
+                                                           lag_sd_active = lag(sd_active,n=6),
+                                                           lag_mean_ambient = lag(mean_ambient,n=6),
+                                                           lag_max_ambient = lag(max_ambient,n=6),
+                                                           lag_min_ambient = lag(min_ambient,n=6),
+                                                           lag_sd_ambient = lag(sd_ambient,n=6))
+lagged = lagged %>% drop_na(lag_min_hydraulic)                                          
+
+# Output joined and lagged dataset with FaultCodeType and BinaryFault. This should be for graphs.
+
+write.csv(lagged,paste(path_out,'final_data-v10-joined-lagged.csv',sep = ''),row.names=FALSE)
+
+```
+# Missing Data
+<br>
+Missing data is imputed using the r package, imputeTS version 3.3
+
+```{r impute, eval=FALSE}
+#### ***Rmarkdown: Will not run when knitting unless you remove eval=FALSE ^
+
+lagged <- read.csv("Data/final_data-v10-joined-lagged.csv", stringsAsFactors = TRUE)
+# after reading in, must convert time date again.
+lagged$round_date <- ymd_hms(lagged$round_date)
+lagged$Date <- ymd(lagged$Date)
+
+# in the imputed data set we are only using the lagged sensory data.
+ts_imputed = subset(lagged, select=-c(max_bearing,min_bearing,mean_bearing,sd_bearing,mean_hydraulic,max_hydraulic,min_hydraulic,sd_hydraulic,mean_rpm,max_rpm,min_rpm,sd_rpm,mean_oil,max_oil,min_oil,sd_oil,mean_ims,max_ims,min_ims,sd_ims,mean_ims2,max_ims2,min_ims2,sd_ims2,mean_ims,max_active,min_active,sd_active,mean_active,mean_ambient,max_ambient,min_ambient,sd_ambient))
+
+# list of turbines
+turbine_list = unique(ts_imputed$location_id)
+ts_imputed = arrange(ts_imputed, location_id, round_date)
+# list of sensory columns names
+column_list = colnames(ts_imputed)[c(9:40)]
+
+# iterate through turbines then through each imputing column
+for (i in 1:length(turbine_list)){
+  print(paste0("imputing turbine: ", i))
+  #subset because there are SO many missing values, so by doing it by turbine, you make it more accurate
+  x = subset(lagged, location_id == turbine_list[i])
+  for (j in column_list){
+    print(paste0("imputing column: ", j))
+    # use this time series imputing algorithm to fill in missing values
+    imp = na_kalman(x[,j])
+    # put data back into bhedata and we have a new dataframe that is all imputed!!!
+    ts_imputed[ts_imputed$location_id == turbine_list[i],j] <- imp
+    
+  }
+  
+}
+
+# Output of the lagged imputed dataset. 
+write.csv(ts_imputed,paste(path_out,'final_data-v10-lagged-imputed.csv',sep = ''),row.names=FALSE)
+
+```
+# Fuzzy work order
+<br>
+In order to join the work order data set with the sensory data, work order could be fuzzy joined to Fault code discriptions.
+```{r fuzzy work order, eval=FALSE}
+#### ***Rmarkdown: Will not run when kniting unless you remove eval=FALSE ^
+
+# fuzzy join workorder and fully_joined
+
+unique(workorder$location_id)
+workorder %>% ungroup()%>% summarise(min = min(wo_start_date),
+                                     max = max(wo_start_date),)
+# because we can see that we only have work orders from 2020-08-01 to 2022-08-31, we will create temporary subset for our sensory dataset to the newest, most recent of work order date so we maybe fuzzy match more closely for work orders to sensory data we have at that actual time or before it. New sensory data surely could not be predictive of prior work orders right?
+joined_subset <- fully_joined[fully_joined$Date < "2022-09-01",]
+
+
+# Defining the two vectors we will be joining from a match. 
+# from the work order info column we will find the most closely related fault code description
+to_vec <- unique(joined_subset$Description)
+from_vec <- unique(workorder$Order_Info)
+# removing the first 6 characters in hopes of better fuzzy matching
+from_vec2 <- substr(from_vec, 6,nchar(from_vec))
+
+get_best_matches <- function(from_vec2,to_vec) {
+  
+  get_best_matches <- function(from_string, to_vec){
+    return(DIFFLIB$get_close_matches(from_string,to_vec, 1L, cutoff = 0))
+  }
+  unlist(lapply(from_vec2, function(from_vec2) get_best_matches(from_vec2, to_vec)))
+}
+difflib_matches <- get_best_matches(from_vec2, to_vec)
+
+get_score <- function(string1, string2) {
+  return(SequenceMatcher$new(from_vec2[1],difflib_matches[1])$ratio())
+}
+
+get_score <- Vectorize(get_score)
+
+difflib_scores <- get_score(from_vec2, difflib_matches)
+
+fuzzy_list <- data.frame(from_vec, difflib_matches)
+names(fuzzy_list) <- c("Order_Info", "Description")
+
+# joining the fuzzy match with work orders, so then workorder cam be joined to the sensory data by Description, location_id, and approximate time. 
+fuzzy_workorder <- full_join(workorder, fuzzy_list, by=c('Order_Info'))
+
+
+# saving the work order with Discription from fault code. Idealy this could be joined for the full data set.
+write.csv(fuzzy_workorder,paste(path_out,'fuzzy_workorder.csv',sep = ''),row.names=FALSE)
+```
+
+## Matrix
+A variable matrix was created in hopes finding correlations.
+
+```{r matrix, echo=TRUE,warning=FALSE,message=FALSE,error=FALSE,fig.keep='all'}
+
+#uses the unimputed dataset
+matrix <- read.csv("Data/final_data-v10-joined-lagged.csv", stringsAsFactors = TRUE)
+
+# after reading in, must convert time date again.
+matrix$round_date <- ymd_hms(matrix$round_date)
+matrix$Date <- ymd(matrix$Date)
+
+numeric <- dplyr::select_if(matrix, is.numeric)
+numeric <- subset(numeric, select =-c(FaultCode)) # These are technically a categorical variable
+r <- cor(numeric, use="pairwise.complete.obs")
+round(r,2)
+ggcorrplot(r) + labs(title = "Correlation matrix")      
+
+
+scatter_matrix = ggpairs(numeric, title="Scatterplot matrix")
+# shouldn't run as it will freeze, instead used python with seaborn for a scatterplot matrix in the next code cluster
+# ggplotly(scatter_matrix)
+
+#Notes:
+# originally made only for the unlagged and unimputed data sets.
+# We can see that the Gearbox oil temp and IMS temperature are directly related with correlation of .94.
+# We can see that Active Power is also directly related to the Generator RPM at .94. Which seems right.
+
+```
+
+# Scatter plot matrix
+<br> 
+At first it was seemingly impossible to plot a scatter plot matrix as the data set is too large for r studio to handle. It was possible to do so in python, but as batch 2 was introduced, this was abandoned to refit it. It may not work.
+
+```{python scatterplotmatrix, eval=FALSE}
+#### ***Rmarkdown: Will not run when knitting unless you remove eval=FALSE ^
+
+# This was originally created for data set prior to batch 2 and probably wont run now.
+# This is python code.
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+
+data = pd.read_csv('Data/final_data-v10-joined-lagged.csv')
+db2 = data.drop(columns =['BinaryFault']) # these are Categorical 
+
+# Seaborn scatter plot matrix
+sns.pairplot(db2)
+plt.show() #use to show in r mark down. Don't use when knitting to html (comment out)
+
+
+```
+
+
+## Multivariate exploration
+Graphs of variable interactions.
+
+```{r multivariate, figures-side, fig.show="hold", out.width="100%", fig.align="center", warning=FALSE}
+#data set for unimputed data set
+graphs <- read.csv("Data/final_data-v10-joined-lagged.csv", stringsAsFactors = TRUE)
+graphs$round_date <- ymd_hms(graphs$round_date)
+#data set for imputed data set
+graphs_imputed <- read.csv("Data/final_data-v10-lagged-imputed.csv", stringsAsFactors = TRUE)
+graphs_imputed$round_date <- ymd_hms(graphs_imputed$round_date)
+
+# graphing the mean active power and mean rpm of one hour intervals, colored by whether they are critical, warnings or other fault codes
+g1 = ggplot(graphs %>%arrange(desc(FaultCodeType)),
+            aes(x=mean_rpm ,
+                y=mean_active,
+                color = FaultCodeType,
+                alpha = FaultCodeType))+
+  ggtitle("Active Power Vs Generator RPM")+
+  xlab("Generator RPM")+
+  ylab("Active Power")+
+  scale_x_continuous(limits = c(500, 1400))+
+  theme_bw()+
+  scale_colour_manual(values = c("#DC267F", "#648FFF", "#FFB000"))+
+  theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(), panel.background = element_blank())+
+  geom_point()+ 
+  scale_alpha_manual(values=c(1,0.05,1))
+
+# graphing the mean active power and mean rpm of one hour intervals, colored by just they are critical and what may be warnings of critical fault codes
+g2 = ggplot(graphs %>% filter(FaultCodeType != "Other")%>%arrange(desc(FaultCodeType)),
+            aes(x=mean_rpm,
+                y=mean_active,
+                color = FaultCodeType,
+                alpha = FaultCodeType))+
+  ggtitle("Active Power Vs Generator RPM")+
+  xlab("Genorator RPM")+
+  ylab("Active Power")+
+  scale_x_continuous(limits = c(500, 1400))+
+  theme_bw()+
+  scale_colour_manual(values = c("#DC267F", "#FFB000"))+
+  scale_alpha_manual(values=c(1,0.05))+
+  theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(), panel.background = element_blank())+
+  geom_point()
+
+# new variable created for graph to be use as color
+graphs_imputed$order <- ifelse(graphs_imputed$BinaryFault=="0", "Critical Fault Absent", "Critical Fault Present")
+#Graphing lagged standard deviation of rpm and hydrolic pressure
+g3 = ggplot(graphs_imputed %>% arrange(order), aes(x = lag_sd_rpm, y = lag_sd_hydraulic, color = factor(BinaryFault))) +
+  geom_point(size = 3,alpha = 0.5) +
+  scale_colour_manual(values = c("black", "red")) +
+  labs(x="Standard Deviation of Generator RPM", y= "Standard Deviation of Hydraulic Pressure",
+       title="Standard Deviation of Generator RPM and Hydraulic Pressure by Critical Fault Occurrance") +
+  facet_wrap(~order, ncol=2) + geom_smooth(method=lm,se=FALSE) + theme_bw(base_size = 16)
+
+#Graphing lagged minimum active power and hydrolic pressure
+g4 = ggplot(graphs_imputed %>% arrange(order), aes(x = lag_min_active, y = lag_min_hydraulic, color = factor(BinaryFault))) +
+  geom_point(size = 3,alpha = 0.7) +
+  scale_colour_manual(values = c("black", "red"),name = "Critical Fault",labels=c("Absent","Present")) +
+  labs(x="Minimum of Active Power", y= "Minimum of Hydraulic Pressure",
+       title="Minimum of Active Power and Hydraulic Pressure by Critical Fault Occurrance") +
+  theme_bw(base_size = 20)
+
+####### Doesn't run graph-------
+# Goal was to graph IMS temperature (and other variables) in a time series with fault code events as vertical lines, but couldn't get geom_vline working.
+# Turbine 28 has the most critical fault codes
+graphs_imputed %>%
+  group_by(location_id) %>%
+  count(BinaryFault)
+# subset of data for 28
+subset_28 = subset(graphs, location_id == "Turbine 28")
+# object for x limits
+lims <- as.POSIXct(strptime(c("2022-07-15 00:00", "2022-09-01 00:00"), 
+                            format = "%Y-%m-%d %H:%M"))
+fault_date = subset_28[subset_28$BinaryFault == "1",c("Description","round_date")]
+g5 <- ggplot(NULL) +
+  geom_line(data = subset_28, aes(x=round_date, y=mean_ims)) + 
+  geom_segment(data = subset_28, aes(x = round_date, y = BinaryFault, xend = round_date, yend = 0), color = "red")+
+  geom_vline(data = fault_date,aes(xintercept = round_date, linetype=4))+
+  scale_x_datetime(limits = lims, expand = c(0, 0))
+
+# Graphing the graphs
+grid.arrange(g1,g2,g3,g4)
+```
+# Random Forest
+<br>
+In order to predict critical fault codes, BinaryFault, a random forest was used with default settings of<br>
+b = 1000<br>
+m = 3<br>
+<br>
+
+The resulting roc curve gave us: <br>
+Specificity = .786<br>
+Sensitivity = .769<br>
+AUC = .813<br>
+This means the model will predict a critical fault code 76.9% of the time correctly when there is actually a critical issue and that the model will predict non critical occurrences 78.6% of the time correctly when there is actually non critical occurrences.
+
+
+```{r, random_forest}
+# reading in the lagged and imputed data set
+forest_data <- read.csv("Data/final_data-v10-lagged-imputed.csv", stringsAsFactors = TRUE)
+forest_data$BinaryFault <- as.factor(forest_data$BinaryFault)
+forest_data$location_id <- as.factor(forest_data$location_id)
+forest_data$round_date <- ymd_hms(forest_data$round_date)
+forest_data$Date <- ymd(forest_data$Date)
+
+#### Random Forest Model 1 without location_id (Turbine) ----
+RNGkind(sample.kind = "default")
+set.seed(231231)
+train.idx <- sample(x = 1 : nrow(forest_data), size = .8*nrow(forest_data))
+# make training data
+train.df <- forest_data[train.idx, ]
+#make testing data
+test.df <- forest_data[-train.idx, ]
+
+mtry <- c(1:10) # The maximum number of independent variables are 32
+keeps = data.frame(m = rep(NA, length(mtry)),
+                   OOB_error_rate = rep(NA, length(mtry)))
+# getting the names of the columns we do not need in the model
+excluded_columns = names(train.df[1:7])
+for (idx in 1:length(mtry)){
+  print(paste0("fitting m = ", mtry[idx]))
+  tempForest  = randomForest(BinaryFault ~ .,
+                             data = train.df[ !names(train.df) %in% excluded_columns], # excluding the names of the columns we are not using.
+                             ntree = 1000,
+                             mtry = mtry[idx])
+  keeps[idx, "m"] = mtry[idx]
+  keeps[idx, "OOB_error_rate"] = mean(predict(tempForest) != train.df$BinaryFault)
+}
+
+keeps
+# plotting the number of variables in the model against the oob. Beyond 8, the oob is the same
+ggplot(data = keeps)+
+  geom_line(aes(x = m, y = OOB_error_rate))+
+  scale_x_continuous(breaks = c(1:10))+
+  labs(x = "m (mtry): # of x variables sampled",
+       y = "OOB Error rate") +
+  ggtitle("mtry Value Vs OOB Error Rate")
+
+# The smallest oob error is with 1 variable... 
+finalForest <- randomForest(BinaryFault ~ .,
+                            data = train.df[ !names(train.df) %in% excluded_columns],
+                            ntree = 1000,
+                            mtry = 3,
+                            importance = TRUE)
+finalForest
+
+# Create Variable Importance plot of most important explanatory variables
+# in the random forest model
+varImpPlot(finalForest, type = 1, main="Variable Importance Plot: Random Forest Model 1")
+# The top 5 are lag_sd_ims, lag_max_ims, lag_sd_oil, lag_min_ims, and lag_min_oil
+
+pi_hat = predict(finalForest, test.df, type="prob")[,"1"]
+#pit_hat is now a vector of predicted probabilities (of 1, critical fault codes)
+
+rocCurve = roc(response = test.df$BinaryFault,
+               predictor = pi_hat,
+               levels=c("0","1"))
+plot(rocCurve, print.thres = TRUE, print.auc=TRUE,
+     main = "ROC Curve for Random Forest Model 1")
+
+# Specificity = .795
+# Sensitivity = .615
+# AUC = .732
+# This means the model will predict a critical fault code 61.5% of the time correctly when there is actually a critical issue and
+# that the model will predict non critical occurrences 79.5% of the time correctly when there is actually non critical occurrences.
+
+pi_star = coords(rocCurve, "best", ret = "threshold")$threshold[1]
+test.df$forest_pred = as.factor(ifelse(pi_hat>pi_star,1,0))
+
+
+
+#### Random Forest Model 2 including location_id (Turbine) ----
+RNGkind(sample.kind = "default")
+set.seed(231231)
+train.idx <- sample(x = 1 : nrow(forest_data), size = .8*nrow(forest_data))
+# make training data
+train.df <- forest_data[train.idx, ]
+#make testing data
+test.df <- forest_data[-train.idx, ]
+
+mtry <- c(1:10) # The maximum number of independent variables are 32
+keeps = data.frame(m = rep(NA, length(mtry)),
+                   OOB_error_rate = rep(NA, length(mtry)))
+# getting the names of the columns we do not need in the model
+excluded_columns = names(train.df[2:7])
+for (idx in 1:length(mtry)){
+  print(paste0("fitting m = ", mtry[idx]))
+  
+  tempForest  = randomForest(BinaryFault ~ .,
+                             data = train.df[ !names(train.df) %in% excluded_columns], # excluding the names of the columns we are not using.
+                             ntree = 1000,
+                             mtry = mtry[idx])
+  keeps[idx, "m"] = mtry[idx]
+  keeps[idx, "OOB_error_rate"] = mean(predict(tempForest) != train.df$BinaryFault)
+}
+
+keeps
+# plotting the number of variables in the model against the oob. Beyond 8, the oob is the same
+ggplot(data = keeps[1:10, ])+
+  geom_line(aes(x = m, y = OOB_error_rate))+
+  scale_x_continuous(breaks = c(1:10))+
+  labs(x = "m (mtry): # of x variables sampled",
+       y = "OOB Error rate") +
+  ggtitle("mtry Value Vs OOB Error Rate")
+
+# The smallest oob error is with 1 variable... 
+finalForest2 <- randomForest(BinaryFault ~ .,
+                             data = train.df[ !names(train.df) %in% excluded_columns],
+                             ntree = 1000,
+                             mtry = 3,
+                             importance = TRUE)
+finalForest2
+
+# Create Variable Importance plot of most important explanatory variables
+# in the random forest model
+varImpPlot(finalForest2, type = 1, main="Variable Importance Plot: Random Forest Model 2")
+# The top 5 are location_id, lag_sd_ims, lag_mean_rpm, lag_min_rpm, and lag_mean_hydraulic
+
+pi_hat = predict(finalForest2, test.df, type="prob")[,"1"]
+#pit_hat is now a vector of predicted probabilities (of 1, critical fault codes)
+
+rocCurve2 = roc(response = test.df$BinaryFault,
+                predictor = pi_hat,
+                levels=c("0","1"))
+plot(rocCurve2, print.thres = TRUE, print.auc=TRUE, 
+     main = "ROC Curve for Random Forest Model 2")
+
+# Specificity = .786
+# Sensitivity = .769
+# AUC = .813
+# This means the model will predict a critical fault code 76.9% of the time correctly when there is actually a critical issue and
+# that the model will predict non critical occurrences 78.6% of the time correctly when there is actually non critical occurrences.
+
+pi_star2 = coords(rocCurve2, "best", ret = "threshold")$threshold[1]
+test.df$forest_pred = as.factor(ifelse(pi_hat>pi_star2,1,0))
+
+
+### Better Variable importance plot for Random Forest Model 1 (AKA Final Model)
+#setting a variable to the variable importance plot
+imp = varImpPlot(finalForest, type = 1)
+# Creating data frame from Variable Importance plot to use in ggplot for a customization
+imp = as.data.frame(imp)
+imp$varnames = rownames(imp) # row names to column
+rownames(imp) = NULL  
+# new data frame for the top 10 Important variables
+varImport = imp[order(imp$MeanDecreaseAccuracy, decreasing = TRUE),] %>% slice(1:10)
+ggplot(varImport, aes(x=reorder(varnames, MeanDecreaseAccuracy), weight=MeanDecreaseAccuracy)) +
+  geom_bar(fill = "#0077C8") +
+  labs(title="Variable importance",
+       subtitle="Top 10 important variables")+
+  ylab("MeanDecreaseAccuracy") +
+  xlab("Variables")+
+  theme(
+    axis.title.y = element_text(vjust = +3),
+    axis.title.x = element_text(vjust = -1.75),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank())+
+  coord_flip()
+# We can see that the most important variable is the standard deviation of IMS bearing 1
+
+```
